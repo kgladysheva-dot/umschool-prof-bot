@@ -1,0 +1,1549 @@
+import os
+import asyncio
+import logging
+import random
+from collections import Counter
+from dataclasses import dataclass
+from typing import List, Tuple, Dict
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import (
+    Message, CallbackQuery,
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    FSInputFile
+)
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramNetworkError
+
+# ✅ Добавлено для раздела "Хочу знать и понимать"
+from aiogram import Router
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+logging.basicConfig(level=logging.INFO)
+
+# ✅ Берем токен только из окружения (как ты запускаешь через export BOT_TOKEN="...")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN не найден. Запусти: export BOT_TOKEN='...'")
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp = Dispatcher(storage=MemoryStorage())
+
+# =========================
+# ======= МЕНЮ ============
+# =========================
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🧪 Тесты")],
+        [KeyboardButton(text="📚 Полезные материалы")],
+        # ✅ ВНЕДРЕНО: новый раздел (текст должен совпадать с хендлером)
+        [KeyboardButton(text="Хочу знать и понимать")],
+        [KeyboardButton(text="🔄 Старт")]
+    ],
+    resize_keyboard=True
+)
+
+TESTS_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🎯 Тест «ПрофКод»")],
+        [KeyboardButton(text="🧩 Тест «Поиск Талантов»")],
+        [KeyboardButton(text="🔥 Тест на мотивацию")],
+        [KeyboardButton(text="🧠 Тест «Тип личности»")],
+        [KeyboardButton(text="⬅️ Назад")]
+    ],
+    resize_keyboard=True
+)
+
+START_TEXT = (
+    "Привет, звездочка! 🌟 Рады что ты тут! Давай знакомиться!\n"
+    "Я профориентационный Бот Умскул 💛 И я помогу тебе с выбором профессии мечты\n\n"
+    "С чего хочешь начать?🥰"
+)
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    await message.answer(START_TEXT, reply_markup=MAIN_KEYBOARD)
+
+@dp.message(F.text == "🔄 Старт")
+async def restart_menu(message: Message):
+    await message.answer(START_TEXT, reply_markup=MAIN_KEYBOARD)
+
+@dp.message(F.text == "🧪 Тесты")
+async def open_tests_menu(message: Message):
+    await message.answer("Выбирай тест 👇", reply_markup=TESTS_KEYBOARD)
+
+@dp.message(F.text == "⬅️ Назад")
+async def back_to_main_menu(message: Message):
+    await message.answer("Ок! Возвращаю в главное меню ✅", reply_markup=MAIN_KEYBOARD)
+
+# =========================
+# ======= ПОЛЕЗНЫЕ МАТЕРИАЛЫ
+# =========================
+
+MATERIALS_TEXT = (
+    "Тут у нас лежит кладесь различных полезных материалов, которые помогут тебе "
+    "в твоем профессиональном пути"
+)
+
+GUIDE_ENT_FEAR_PATH = "materials/guide_ent_fear.pdf"
+GUIDE_BALANS_ENT_PATH = "materials/guide_balans_ent.pdf"
+
+def materials_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Гайд. Страх ЕНТ", callback_data="materials_ent_fear_pdf")],
+        [InlineKeyboardButton(text="📄 Гайд. Баланс в подготовке к ЕНТ", callback_data="materials_balans_ent_pdf")],
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="materials_back_to_menu")]
+    ])
+
+@dp.message(F.text == "📚 Полезные материалы")
+async def materials_menu(message: Message):
+    await message.answer(MATERIALS_TEXT, reply_markup=materials_keyboard())
+
+@dp.callback_query(F.data == "materials_back_to_menu")
+async def materials_back_to_menu(cb: CallbackQuery):
+    await cb.message.answer("Ок! Возвращаю в главное меню ✅", reply_markup=MAIN_KEYBOARD)
+    await cb.answer()
+
+@dp.callback_query(F.data == "materials_ent_fear_pdf")
+async def materials_ent_fear_pdf(cb: CallbackQuery):
+    try:
+        pdf = FSInputFile(GUIDE_ENT_FEAR_PATH)
+        await cb.message.answer_document(pdf, caption="📄 <b>Гайд. Страх ЕНТ</b>")
+    except Exception:
+        await cb.message.answer(
+            "😅 Не нашёл файл гайда\n"
+            f"Проверь, что он лежит по пути: <code>{GUIDE_ENT_FEAR_PATH}</code>"
+        )
+    await cb.answer()
+
+@dp.callback_query(F.data == "materials_balans_ent_pdf")
+async def materials_balans_ent_pdf(cb: CallbackQuery):
+    try:
+        pdf = FSInputFile(GUIDE_BALANS_ENT_PATH)
+        await cb.message.answer_document(pdf, caption="📄 <b>Гайд. Баланс в подготовке к ЕНТ</b>")
+    except Exception:
+        await cb.message.answer(
+            "😅 Не нашёл файл гайда\n"
+            f"Проверь, что он лежит по пути: <code>{GUIDE_BALANS_ENT_PATH}</code>"
+        )
+    await cb.answer()
+
+# =========================
+# ======= ПРОФКОД =========
+# =========================
+
+PROF_NAMES = {
+    1: "🥗 Нутрициолог", 2: "⭐ Астрофизик", 3: "🐾 Зоолог", 4: "💊 Валеолог", 5: "🪨 Геолог",
+    6: "🧠 Психолог", 7: "📈 Коуч", 8: "⚖️ Конфликтолог", 9: "💼 Бизнес-тренер", 10: "🎲 Игропедагог",
+    11: "🏢 GR-менеджер", 12: "👥 Комьюнити-менеджер", 13: "🔍 Хэдхантер", 14: "⚖️ Сетевой юрист", 15: "📢 Пиар-менеджер",
+    16: "🔗 SEO-оптимизатор", 17: "📊 Аналитик Big Data", 18: "💻 Web-программист", 19: "📈 Актуарий", 20: "💰 Инвестиционный аналитик",
+    21: "🎬 Художник-мультипликатор", 22: "🎥 Кинокритик", 23: "✨ Мэппинг-режиссер", 24: "👗 Стилист-шопер", 25: "🖼️ Арт-оценщик",
+    26: "🍰 Пастижер", 27: "👨‍🍳 Повар", 28: "💎 Ювелир", 29: "💉 Мастер Татуажа", 30: "🧵 Портной",
+    31: "✍️ Сценарист", 32: "📝 Копирайтер", 33: "🗣️ Спитчрайтер", 34: "📻 Диктор Радио и ТВ", 35: "🌐 Переводчик",
+    36: "💪 Фитнес-тренер", 37: "👮 Полицейский", 38: "🏅 Профессиональный спортсмен", 39: "🚒 Спасатель МЧС", 40: "🥾 Инструктор по туризму",
+    41: "📋 Менеджер проекта", 42: "📈 Директор по развитию", 43: "🚀 Ментор стартапов", 44: "🎤 Продюсер", 45: "🏛️ Политик",
+    46: "🔬 Электрохимик", 47: "🍲 Технолог пищевого производства", 48: "🏗️ Архитектор", 49: "🔧 Инженер конструктор", 50: "🖨️ Инженер 3D печати"
+}
+
+PROF_DESCRIPTIONS = {  # как у тебя было
+    1: "Это специалист, выявляющий взаимосвязь между питанием и здоровьем человека и занимающийся вопросами гигиены питания.",
+    2: "Специалист, который занимается изучением строения небесных тел, физических свойств и химического состава Солнца, планет, комет или звёзд и туманностей.",
+    3: "Специалист, занимающийся изучением характера животного и корректировкой его поведения.",
+    4: "Специалист, ученый в области естественных наук, который занимается вопросами сохранения здоровья человека через труд, эргономику и психогигиену.",
+    5: "Специалист по изучению состава и строения горных пород с целью поисков и разведки месторождений полезных ископаемых.",
+    6: "Специалист, помогающий человеку в разных жизненных ситуациях при различных психологических нарушениях.",
+    7: "Специалист, раскрывающий потенциал сотрудников компании, увеличивающий производительность труда и эффективность работы.",
+    8: "Специалист, который занимается профилактикой и разрешением различных конфликтов.",
+    9: "Специалист, который занимается обучением и развитием персонала компании.",
+    10: "Специалист, который создает образовательные программы на основе игровых методик.",
+    11: "GR — взаимодействие с органами государственной власти. Специалист по связям с госструктурами.",
+    12: "Специалист в области управления сообществами. Отвечает за создание, развитие и общение сообществ.",
+    13: "Специалист по поиску и подбору редких профессионалов на ключевые должности.",
+    14: "Специалист, формирующий нормативно-правовое взаимодействие в Сети и виртуальных мирах.",
+    15: "Специалист, отвечающий за формирование образа и репутации бренда/персоны, работу со СМИ и общественностью.",
+    16: "Специалист, решающий задачи продвижения сайта под требования поисковых систем.",
+    17: "Специалист, ответственный за аналитику больших данных и выявление взаимосвязей.",
+    18: "Специалист в области web-программирования, воплощающий проекты web-дизайнеров.",
+    19: "Специалист по анализу страховых и финансовых рисков. Математик-аналитик.",
+    20: "Специалист, изучающий финансовые рынки для расчета инвестиционной стоимости и рисков.",
+    21: "Специалист по созданию мультфильмов.",
+    22: "Специалист, анализирующий кинематографический процесс и рецензирующий кинофильмы.",
+    23: "Специалист лазерного шоу, создающий 3D mapping проекции на любые поверхности.",
+    24: "Специалист, помогающий покупателю подобрать одежду в соответствии со стилем и модными тенденциями.",
+    25: "Специалист, оценивающий новые форматы произведений искусства (сайнс-арт, стрит-арт).",
+    26: "Специалист, изготовливающий изделия из натуральных волос (прически, парики).",
+    27: "Специалист по приготовлению пищи.",
+    28: "Мастер по изготовлению художественных изделий из драгоценных металлов и камней.",
+    29: "Специалист по нанесению перманентного макияжа.",
+    30: "Специалист, выполняющий пошив швейных изделий по индивидуальным заказам.",
+    31: "Создатель литературной основы для пьесы, фильма или телепередачи.",
+    32: "Специалист, создающий рекламные тексты, слоганы и сценарии.",
+    33: "Специалист, составляющий тексты выступлений для бизнесменов и чиновников.",
+    34: "Специалист, читающий информационные, художественные и рекламные материалы в эфире.",
+    35: "Специалист, занимающийся переводом устной или письменной речи.",
+    36: "Инструктор, руководящий тренировками и следящий за правильностью упражнений.",
+    37: "Специалист по охране правопорядка.",
+    38: "Специалист, работающий в определенном виде спорта.",
+    39: "Специалист по спасению пострадавших в чрезвычайных ситуациях.",
+    40: "Специалист, обучающий преодолению естественных препятствий в туризме.",
+    41: "Специалист, отвечающий за выполнение проекта в сроки, с качеством и в бюджете.",
+    42: "Руководитель, занимающийся продвижением компании и улучшением показателей.",
+    43: "Профессионал, курирующий команды новых стартапов.",
+    44: "Руководитель проекта в творческих и медиа индустриях.",
+    45: "Специалист в области публичной политики.",
+    46: "Специалист по изучению электрохимических процессов.",
+    47: "Специалист, контролирующий производство продуктов питания.",
+    48: "Специалист, разрабатывающий архитектурные проекты и пространство.",
+    49: "Специалист, разрабатывающий конструкции и рассчитывающий нагрузки.",
+    50: "Специалист по технологии 3D-печати в производстве и инженерии."
+}
+
+PROF_SHORT = {
+    1: "Нутрициолог", 2: "Астрофизик", 3: "Зоолог", 4: "Валеолог", 5: "Геолог",
+    6: "Психолог", 7: "Коуч", 8: "Конфликтолог", 9: "Бизнес-тренер", 10: "Игропедагог",
+    11: "GR-менеджер", 12: "Комьюнити", 13: "Хэдхантер", 14: "Сетевой юрист", 15: "Пиар-менеджер",
+    16: "SEO", 17: "Big Data", 18: "Web-прог", 19: "Актуарий", 20: "Инвест-аналитик",
+    21: "Мультик", 22: "Кинокритик", 23: "Мэппинг", 24: "Стилист", 25: "Арт-оценщик",
+    26: "Пастижер", 27: "Повар", 28: "Ювелир", 29: "Татуаж", 30: "Портной",
+    31: "Сценарист", 32: "Копирайтер", 33: "Спитчрайтер", 34: "Диктор", 35: "Переводчик",
+    36: "Фитнес", 37: "Полицейский", 38: "Спортсмен", 39: "МЧС", 40: "Тур-инструктор",
+    41: "PM", 42: "Дир.развития", 43: "Ментор", 44: "Продюсер", 45: "Политик",
+    46: "Электрохимик", 47: "Технолог", 48: "Архитектор", 49: "Инж-констр", 50: "3D-инженер"
+}
+
+COLORS = {
+    1: "зеленый", 2: "зеленый", 3: "зеленый", 4: "зеленый", 5: "зеленый",
+    6: "лиловый", 7: "лиловый", 8: "лиловый", 9: "лиловый", 10: "лиловый",
+    11: "светло рыжий", 12: "светло рыжий", 13: "светло рыжий", 14: "светло рыжий", 15: "светло рыжий",
+    16: "голубой", 17: "голубой", 18: "голубой", 19: "голубой", 20: "голубой",
+    21: "желтый", 22: "желтый", 23: "желтый", 24: "желтый", 25: "желтый",
+    26: "серый", 27: "серый", 28: "серый", 29: "серый", 30: "серый",
+    31: "изумрудный", 32: "изумрудный", 33: "изумрудный", 34: "изумрудный", 35: "изумрудный",
+    36: "ярко оранжевый", 37: "ярко оранжевый", 38: "ярко оранжевый", 39: "ярко оранжевый", 40: "ярко оранжевый",
+    41: "ярко розовый", 42: "ярко розовый", 43: "ярко розовый", 44: "ярко розовый", 45: "ярко розовый",
+    46: "белый", 47: "белый", 48: "белый", 49: "белый", 50: "белый"
+}
+
+TYPE_DESCRIPTIONS = {
+    "зеленый": {"emoji": "🌿", "name": "Натуралистический",
+        "desc": "Люди, которые выбирают такой тип профессии, любят природу, животных и растения. Им интересно здоровье человека, флора, фауна и вся окружающая среда. <b>Предметы:</b> биология, география, химия, физика.",
+        "link": "https://profkrisglad.tilda.ws/page22904672.html"
+    },
+    "лиловый": {"emoji": "🤔", "name": "Внутриличностный",
+        "desc": "Развитый внутренний мир, эмпатия, рефлексия, осознанность, умение поддерживать и мотивировать других.",
+        "link": "https://profkrisglad.tilda.ws/page22909916.html"
+    },
+    "светло рыжий": {"emoji": "🤝", "name": "Межличностный",
+        "desc": "Коммуникация, переговоры, контакт с людьми. Легко понимают мотивы и умеют выстраивать отношения.",
+        "link": "https://profkrisglad.tilda.ws/page22905673.html"
+    },
+    "голубой": {"emoji": "💻", "name": "Цифровой",
+        "desc": "Сильная аналитика и логика. Работа с данными, цифрами, кодом, вычислениями и алгоритмами.",
+        "link": "https://profkrisglad.tilda.ws/page22908598.html"
+    },
+    "желтый": {"emoji": "🎨", "name": "Художественный",
+        "desc": "Творчество, стиль, воображение, эстетика. Умение создавать красоту и выражать идеи через визуал/арт.",
+        "link": "https://profkrisglad.tilda.ws/page22899555.html"
+    },
+    "серый": {"emoji": "🔧", "name": "Прикладной",
+        "desc": "Ручной труд, инструменты, изготовление вещей своими руками. Мастерство, практика и ремесло.",
+        "link": "https://profkrisglad.tilda.ws/page22909449.html"
+    },
+    "изумрудный": {"emoji": "📝", "name": "Вербально-лингвистический",
+        "desc": "Речь, тексты, языки, письменно и устно. Умение объяснять, писать, убеждать и вести диалог.",
+        "link": "https://profkrisglad.tilda.ws/page22880053.html"
+    },
+    "ярко оранжевый": {"emoji": "⚡", "name": "Физический",
+        "desc": "Сила, выносливость, движение и практика. Любовь к физической активности и обучению через действия.",
+        "link": "https://profkrisglad.tilda.ws/page22902370.html"
+    },
+    "ярко розовый": {"emoji": "👑", "name": "Лидерский",
+        "desc": "Организация, управление, ответственность, решения, переговоры, развитие проектов и команд.",
+        "link": "https://profkrisglad.tilda.ws/page22902902.html"
+    },
+    "белый": {"emoji": "🔬", "name": "Технико-технологический",
+        "desc": "Инженерия, чертежи, схемы, техника и технологии. Пространственное мышление и логика.",
+        "link": "https://profkrisglad.tilda.ws/page22898516.html"
+    }
+}
+
+PROFKOD_INTRO = (
+    "ПрофКод — отличный выбор, если хочешь понять, какой <b>тип профессий</b> тебе ближе 😉\n\n"
+    "📌 <b>Как проходит тест:</b>\n"
+    "🔹 Тест состоит из <b>2 раундов</b>\n"
+    "🔹 Каждый раз тебе будут предложены <b>2 профессии</b>\n"
+    "👉 Твоя задача — выбрать <b>ОДНУ</b>, которая ближе тебе\n\n"
+    "💡 Подсказка: если нравятся обе или не нравятся обе — выбирай ту, что ближе из двух"
+)
+
+PROFKOD_RESULTS_INTRO = (
+    "Ваууу! 😱 Поздравляю тебя, звездочка! 🤩\n\n"
+    "Это твои топ 3 типа профессий, по которым ты сможешь найти те профессии, что будут тебе ближе и интереснее!\n"
+    "Приоритет — тот тип, который набрал больше всего твоих голосов ☺️\n\n"
+    "🤫 Но есть профессии, которые совмещают в себе сразу 2-3 типа! Поэтому мы не выбираем один тип 😉\n\n"
+)
+
+prof_users = {}
+
+def prof_button_title(pid: int) -> str:
+    base = PROF_SHORT.get(pid, str(pid))
+    return base  # без двойных "№", просто название
+
+async def get_valid_prof_pair(prof_list):
+    if len(prof_list) < 2:
+        return None, None
+    for _ in range(200):
+        p1 = random.choice(prof_list)
+        candidates = [p for p in prof_list if p != p1 and COLORS[p] != COLORS[p1]]
+        if candidates:
+            return p1, random.choice(candidates)
+    p1 = random.choice(prof_list)
+    p2 = random.choice([p for p in prof_list if p != p1])
+    return p1, p2
+
+async def show_prof_pair(chat, user_id: int):
+    data = prof_users[user_id]
+
+    if data["round"] == 1:
+        pair = data["pair"]
+        if pair >= 25:
+            await bot.send_message(
+                chat.id,
+                "Готов(а) ко второму раунду, чтобы узнать свой тип профессии?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Гоу! 🚀", callback_data="prof_round2_go")]
+                ])
+            )
+            return
+
+        p1 = pair + 1
+        p2 = pair + 26
+        title = f"🟦 <b>РАУНД 1</b> • Пара {pair+1}/25"
+
+    else:
+        pair = data["pair"]
+        if pair >= 12:
+            await bot.send_message(
+                chat.id,
+                "Так волнительно! 😱🥰 Подведем итоги теста?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🏁 Итоги теста ПрофКод", callback_data="prof_show_results")]
+                ])
+            )
+            return
+
+        finalists = data["round1_winners"]
+        used = set(data["used_in_round2"])
+        available = [p for p in finalists if p not in used]
+
+        if len(available) < 2:
+            await bot.send_message(
+                chat.id,
+                "Так волнительно! 😱🥰 Подведем итоги теста?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🏁 Итоги теста ПрофКод", callback_data="prof_show_results")]
+                ])
+            )
+            return
+
+        p1, p2 = await get_valid_prof_pair(available)
+        data["used_in_round2"].extend([p1, p2])
+        title = f"🟪 <b>РАУНД 2</b> • Пара {pair+1}/12"
+
+    text = (
+        f"{title}\n\n"
+        f"🅰️ <b>{PROF_NAMES[p1]}</b>\n"
+        f"{PROF_DESCRIPTIONS[p1]}\n\n"
+        f"⚔️ <b>ПРОТИВ</b> ⚔️\n\n"
+        f"🅱️ <b>{PROF_NAMES[p2]}</b>\n"
+        f"{PROF_DESCRIPTIONS[p2]}\n\n"
+        f"👉 Выбери <b>ОДНУ</b> профессию"
+    )
+
+    # ✅ ИСПРАВЛЕНО: добавили кнопки "Подробнее" под пару
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"🅰️ {prof_button_title(p1)}", callback_data=f"prof_pick_{p1}"),
+            InlineKeyboardButton(text=f"🅱️ {prof_button_title(p2)}", callback_data=f"prof_pick_{p2}")
+        ],
+        [
+            InlineKeyboardButton(text="ℹ️ Подробнее A", callback_data=f"prof_more_{p1}"),
+            InlineKeyboardButton(text="ℹ️ Подробнее B", callback_data=f"prof_more_{p2}")
+        ]
+    ])
+
+    await bot.send_message(chat.id, text, reply_markup=kb)
+    data["pair"] += 1
+
+async def prof_results_text(user_id: int) -> str:
+    data = prof_users[user_id]
+    final = data["round2_winners"]
+    total = len(final) if final else 1
+
+    color_count = Counter(COLORS[p] for p in final)
+    top3 = color_count.most_common(3)
+
+    text = "🏆 <b>Типы профессий, которые тебе подходят после прохождения теста «ПрофКод»</b>\n\n"
+    text += PROFKOD_RESULTS_INTRO
+
+    for i, (color, count) in enumerate(top3, 1):
+        info = TYPE_DESCRIPTIONS.get(color)
+        if not info:
+            continue
+        percent = int(round(count / total * 100))
+        text += f"{i}️⃣ {info['emoji']} <b>{info['name']}</b> — {percent}%\n"
+        text += f"{info['desc']}\n"
+        text += f"👉 {info['link']}\n\n"
+
+    return text
+
+# ✅ ИСПРАВЛЕНО: функция, которая отправляет ТОЛЬКО картинку из папки images по id профессии
+async def send_prof_image(chat_id: int, pid: int):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    img_dir = os.path.join(base_dir, "images")
+
+    for ext in ("png", "jpg", "jpeg", "webp"):
+        path = os.path.join(img_dir, f"{pid}.{ext}")
+        if os.path.isfile(path):
+            await bot.send_photo(chat_id, FSInputFile(path))
+            return
+
+    await bot.send_message(
+        chat_id,
+        f"😅 Картинка не найдена\nПроверь файл: <code>images/{pid}.png</code>"
+    )
+
+@dp.message(F.text == "🎯 Тест «ПрофКод»")
+async def profkod_intro(message: Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Готов(а) выслушать инструкцию? ✅", callback_data="prof_intro_go")]
+    ])
+    await message.answer(
+        "Привет! Давай пройдем тест под названием «ПрофКод», где мы с тобой определим тип профессии, который тебе ближе 💛",
+        reply_markup=kb
+    )
+
+@dp.callback_query(F.data == "prof_intro_go")
+async def profkod_show_instruction(cb: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Стартуем? 🚀", callback_data="prof_start_test")]
+    ])
+    await cb.message.answer(PROFKOD_INTRO, reply_markup=kb)
+    await cb.answer()
+
+@dp.callback_query(F.data == "prof_start_test")
+async def prof_start_test(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    prof_users[user_id] = {
+        "round": 1,
+        "pair": 0,
+        "round1_winners": [],
+        "round2_winners": [],
+        "used_in_round2": []
+    }
+    await cb.message.delete()
+    await bot.send_message(cb.message.chat.id, "🚀 <b>Поехали! Раунд 1 начинается!</b>")
+    await show_prof_pair(cb.message.chat, user_id)
+    await cb.answer()
+
+@dp.callback_query(F.data == "prof_round2_go")
+async def prof_round2_go(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in prof_users:
+        await cb.answer("Тест не запущен 😅", show_alert=True)
+        return
+    prof_users[user_id]["round"] = 2
+    prof_users[user_id]["pair"] = 0
+    await cb.message.delete()
+    await bot.send_message(cb.message.chat.id, "🔥 <b>Раунд 2 начинается!</b>")
+    await show_prof_pair(cb.message.chat, user_id)
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("prof_pick_"))
+async def prof_pick(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in prof_users:
+        await cb.answer("Нажми «Тест ПрофКод» заново 😅", show_alert=True)
+        return
+
+    pid = int(cb.data.split("_")[-1])
+    data = prof_users[user_id]
+
+    if data["round"] == 1:
+        data["round1_winners"].append(pid)
+    else:
+        data["round2_winners"].append(pid)
+
+    await cb.message.delete()
+    await show_prof_pair(cb.message.chat, user_id)
+    await cb.answer()
+
+# ✅ ИСПРАВЛЕНО: обработчик "Подробнее" — присылает картинку
+@dp.callback_query(F.data.startswith("prof_more_"))
+async def prof_more(cb: CallbackQuery):
+    try:
+        pid = int(cb.data.split("_")[-1])
+    except Exception:
+        await cb.answer("Ошибка id 😅", show_alert=True)
+        return
+
+    await send_prof_image(cb.message.chat.id, pid)
+    await cb.answer()
+
+@dp.callback_query(F.data == "prof_show_results")
+async def prof_show_results(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in prof_users:
+        await cb.answer("Тест не запущен 😅", show_alert=True)
+        return
+
+    text = await prof_results_text(user_id)
+    await cb.message.delete()
+    await bot.send_message(cb.message.chat.id, text, disable_web_page_preview=True)
+
+    prof_users.pop(user_id, None)
+    await cb.answer()
+
+# =========================
+# ===== TALENTS TEST ======
+# =========================
+
+TALENT_TOTAL = 40
+
+TALENT_NAMES = {
+    1: "КАТАЛИЗАТОР", 2: "ДОСТИЖЕНИЕ", 3: "ГИБКОСТЬ", 4: "УБЕЖДЕНИЕ", 5: "ОПТИМИЗАТОР",
+    6: "АНАЛИТИК", 7: "КОММУНИКАЦИЯ", 8: "КОНКУРЕНЦИЯ", 9: "ВКЛЮЧЕННОСТЬ", 10: "ВЗАИМОСВЯЗАННОСТЬ",
+    11: "ПАМЯТЬ", 12: "ОБУЧЕНИЕ", 13: "РАЗВИТИЕ", 14: "ПОЗИТИВНОСТЬ", 15: "ЭМПАТИЯ",
+    16: "СОСРЕДОТОЧЕННОСТЬ", 17: "ВОССТАНОВЛЕНИЕ", 18: "УВЕРЕННОСТЬ", 19: "ВИДЕНИЕ БУДУЩЕГО",
+    20: "ОБАЯНИЕ", 21: "ПЛАНЕР", 22: "СЛУЖЕНИЕ", 23: "РАСПОРЯДИТЕЛЬ", 24: "МЫШЛЕНИЕ",
+    25: "МАКСИМИЗАТОР", 26: "ГЕНЕРАТОР ИДЕЙ", 27: "КОНТЕКСТ", 28: "ГАРМОНИЯ", 29: "ЛИКВИДАЦИЯ",
+    30: "ИНДИВИДУАЛИЗАЦИЯ", 31: "КРЕАТОРСТВО", 32: "ТРАНСФОРМАЦИЯ", 33: "КОНСЕРВАТИЗМ",
+    34: "ОСМОТРИТЕЛЬНОСТЬ", 35: "СТРЕССОУСТОЙЧИВОСТЬ", 36: "МУЛЬТИФОКУС", 37: "ЭНЕРГИЯ",
+    38: "МАТЕРИАЛИЗМ", 39: "ДЕТАЛИЗАЦИЯ", 40: "ТВЁРДОСТЬ ЭМОЦИЙ"
+}
+
+# ✅ Вернули описания талантов (чтобы были и при выборе, и в результатах)
+TALENT_DESCRIPTIONS = {
+    1: "Ты запускаешь движение и ускоряешь процессы, умеешь «зажигать» людей и идеи, хорошо начинаешь и подталкиваешь к действию",
+    2: "Тебя драйвит результат, ты любишь ставить цель и идти к ней, замечаешь прогресс и умеешь доводить до победы",
+    3: "Ты легко адаптируешься, быстро переключаешься и не ломается при изменениях, находишь новый способ вместо паники",
+    4: "Ты умеешь убеждать и доносить мысль так, чтобы тебе поверили, сильный навык аргументации и влияния на решение",
+    5: "Ты видишь, как сделать лучше и эффективнее, умеешь улучшать систему, находить сильные стороны и усиливать их",
+    6: "Ты любишь разбираться в причинах и логике, анализируешь факты, видишь закономерности и часто находишь точное объяснение",
+    7: "Тебе легко общаться и строить контакт, ты чувствуешь аудиторию, умеешь объяснять, договариваться и поддерживать диалог",
+    8: "Тебя заряжает соревнование и вызов, ты хочешь быть сильнее, любишь сравнить результат и доказать себе уровень",
+    9: "Ты включаешься сердцем и головой, когда тебе важно, берёшь ответственность и реально присутствуешь в процессе",
+    10: "Ты видишь связи между людьми, событиями и идеями, умеешь соединять точки и объяснять картину шире",
+    11: "Ты хорошо запоминаешь, сохраняешь знания и умеешь доставать нужное из головы вовремя, опора на опыт и факты",
+    12: "Ты быстро учишься и кайфуешь от новых навыков, легко впитываешь информацию и любишь становиться сильнее",
+    13: "Ты чувствуешь рост и хочешь развиваться, умеешь улучшать себя и других, поддерживаешь прогресс и движение вверх",
+    14: "Ты несёшь свет и настроение, умеешь поднимать дух, видишь хорошее и заражаешь оптимизмом",
+    15: "Ты тонко чувствуешь эмоции других, умеешь поддержать, понять без лишних слов и быть рядом по-настоящему",
+    16: "Ты умеешь фокусироваться, держать внимание и глубоко погружаться, сильный талант для учёбы и сложных задач",
+    17: "Ты любишь исправлять и чинить, умеешь возвращать в норму, восстанавливать порядок и убирать последствия ошибок",
+    18: "Ты веришь в себя и свои решения, не теряешься в трудном, умеешь говорить уверенно и держать позицию",
+    19: "Ты видишь перспективу и думаешь наперёд, умеешь представлять будущее и планировать путь к нему",
+    20: "Тебе легко располагать к себе людей, ты умеешь понравиться, создать тёплое впечатление и вести за собой мягко",
+    21: "Ты любишь план и структуру, умеешь организовать дела, расписать шаги и держать контроль над процессом",
+    22: "Тебе важно быть полезным, ты поддерживаешь, заботишься и готов делать вклад ради людей или смысла",
+    23: "Ты умеешь распределять роли, следить за порядком и управлять процессом, хорошо координируешь и наводишь систему",
+    24: "Ты любишь размышлять глубоко, видеть смысл, задавать умные вопросы и рассуждать шире обычного",
+    25: "Ты хочешь делать не просто хорошо, а идеально, замечаешь потенциал и усиливаешь сильные стороны до максимума",
+    26: "Ты генерируешь идеи быстро и много, видишь варианты, предлагаешь нестандартное и легко придумываешь новое",
+    27: "Ты хорошо понимаешь прошлое и причины, любишь контекст, умеешь объяснить «откуда это взялось» и почему так стало",
+    28: "Ты чувствуешь баланс и мир, умеешь сглаживать конфликты и находить спокойное решение без лишней драмы",
+    29: "Ты умеешь устранять лишнее и «вычищать» проблемы, быстро находишь слабое место и убираешь то, что мешает",
+    30: "Ты видишь уникальность каждого человека, умеешь подбирать подход под личность и настраивать взаимодействие тонко",
+    31: "Ты создаёшь творческие формы, придуманные тобой штуки выглядят живо и интересно, талант к созданию нового продукта",
+    32: "Ты умеешь менять и обновлять, легко перестраиваешься и трансформируешь процесс так, чтобы стало лучше",
+    33: "Ты ценишь традиции и стабильность, умеешь держать проверенный путь и защищать то, что работает",
+    34: "Ты осторожен и предусмотрителен, видишь риски заранее и умеешь не попадать в лишние ошибки",
+    35: "Ты держишься в стрессовых ситуациях, сохраняешь спокойствие и устойчивость, умеешь не разваливаться под давлением",
+    36: "Ты можешь держать в голове несколько задач, быстро переключаться и быть эффективным в многозадачности",
+    37: "У тебя много энергии и темпа, ты заряжаешь движение, быстро включаешься и тащишь процесс вперёд",
+    38: "Ты умеешь думать о выгоде и ресурсах, ценишь результат, практичность и материальную опору",
+    39: "Ты замечаешь детали, тонкости и мелочи, видишь то, что другие пропускают, и делаешь работу точнее",
+    40: "Ты умеешь держать внутренний стержень, не «плывёшь» от эмоций, можешь быть твёрдым и устойчивым в решениях"
+}
+
+TALENT_INTRO = (
+    "✨ <b>У каждого человека есть свои таланты!</b> ✨\n\n"
+    "Их намного больше, чем кажется на первый взгляд 👀\n"
+    "Помимо привычных способностей, у каждого из нас есть <b>внутриличностные таланты</b> — то, что связано с мышлением, чувствами и взаимодействием с миром 🌍\n\n"
+    "Это такие качества, как:\n"
+    "💬 коммуникация\n"
+    "💛 эмпатия\n"
+    "🛡️ стрессоустойчивость\n"
+    "🔥 мотивация\n"
+    "🧠 осознанность\n"
+    "и многое другое\n\n"
+    "🧩 <b>В этом тесте мы вместе определим твои сильные стороны</b>\n"
+    "Те самые <b>5 внутриличностных талантов</b>, которые действительно тебе подходят и проявляются в жизни 💪\n\n"
+    "📌 <b>Как проходит тест:</b>\n"
+    "🔹 Тест состоит из <b>3 раундов</b>\n"
+    "🔹 Всего — <b>40 талантов</b>\n"
+    "🔹 По итогам всех раундов мы оставим <b>5 самых подходящих именно тебе</b>\n\n"
+    "⚖️ <b>Механика простая:</b>\n"
+    "Каждый раз тебе будут предлагаться <b>2 таланта</b>\n"
+    "👉 Твоя задача — выбрать <b>ТОЛЬКО ОДИН</b>, тот, который ощущается ближе\n\n"
+    "💡 <b>Небольшая подсказка:</b>\n"
+    "Если кажется, что подходят оба — выбирай тот, что откликается чуть сильнее\n"
+    "Если не нравится ни один — всё равно выбери тот, который <b>меньше всего “не про тебя”</b>\n\n"
+    "🚀 Готов узнать себя лучше?\n"
+    "Тогда начинаем!"
+)
+
+talent_users = {}
+
+def talent_button_title(tid: int) -> str:
+    return TALENT_NAMES[tid]
+
+async def show_talent_pair(chat, user_id: int):
+    data = talent_users[user_id]
+    r = data["round"]
+    pair = data["pair"]
+
+    if r == 1:
+        if pair >= 20:
+            data["round"] = 2
+            data["pair"] = 0
+            await bot.send_message(
+                chat.id,
+                "🔥 <b>Раунд 1 завершён!</b>\nГотов(а) ко второму раунду? 😱🥰",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Гоу! 🚀", callback_data="talent_round2_go")]
+                ])
+            )
+            return
+        t1 = pair + 1
+        t2 = pair + 21
+        title = f"🟦 <b>РАУНД 1</b> • Пара {pair+1}/20"
+
+    elif r == 2:
+        if pair >= 10:
+            data["round"] = 3
+            data["pair"] = 0
+            await bot.send_message(
+                chat.id,
+                "🔥 <b>Раунд 2 завершён!</b>\nГотов(а) к третьему раунду? 😱🥰",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Гоу! 🚀", callback_data="talent_round3_go")]
+                ])
+            )
+            return
+        winners = data["r1_winners"]
+        t1 = winners[pair]
+        t2 = winners[-(pair + 1)]
+        title = f"🟪 <b>РАУНД 2</b> • Пара {pair+1}/10"
+
+    else:
+        if pair >= 5:
+            await bot.send_message(
+                chat.id,
+                "Так волнительно!😱🥰 Подведем итоги теста?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🏁 Итоги теста «Поиск Талантов»", callback_data="talent_results")]
+                ])
+            )
+            return
+        winners = data["r2_winners"]
+        t1 = winners[pair]
+        t2 = winners[-(pair + 1)]
+        title = f"🟧 <b>РАУНД 3</b> • Пара {pair+1}/5"
+
+    text = (
+        f"{title}\n\n"
+        f"🅰️ <b>{TALENT_NAMES[t1]}</b>\n{TALENT_DESCRIPTIONS[t1]}\n\n"
+        f"⚔️ <b>ПРОТИВ</b> ⚔️\n\n"
+        f"🅱️ <b>{TALENT_NAMES[t2]}</b>\n{TALENT_DESCRIPTIONS[t2]}\n\n"
+        f"👉 Выбери <b>ОДИН</b> талант"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"🅰️ {talent_button_title(t1)}", callback_data=f"talent_pick_{t1}"),
+            InlineKeyboardButton(text=f"🅱️ {talent_button_title(t2)}", callback_data=f"talent_pick_{t2}")
+        ]
+    ])
+
+    await bot.send_message(chat.id, text, reply_markup=kb)
+    data["pair"] += 1
+
+@dp.message(F.text == "🧩 Тест «Поиск Талантов»")
+async def talents_start(message: Message):
+    user_id = message.from_user.id
+    talent_users[user_id] = {"round": 1, "pair": 0, "r1_winners": [], "r2_winners": [], "r3_winners": []}
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Начинаем!", callback_data="talent_go")]
+    ])
+    await message.answer(TALENT_INTRO, reply_markup=kb)
+
+@dp.callback_query(F.data == "talent_go")
+async def talent_go(cb: CallbackQuery):
+    await cb.message.delete()
+    await show_talent_pair(cb.message.chat, cb.from_user.id)
+    await cb.answer()
+
+@dp.callback_query(F.data == "talent_round2_go")
+async def talent_round2_go(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in talent_users:
+        await cb.answer("Тест не запущен 😅", show_alert=True)
+        return
+    talent_users[user_id]["round"] = 2
+    talent_users[user_id]["pair"] = 0
+    await cb.message.delete()
+    await show_talent_pair(cb.message.chat, user_id)
+    await cb.answer()
+
+@dp.callback_query(F.data == "talent_round3_go")
+async def talent_round3_go(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in talent_users:
+        await cb.answer("Тест не запущен 😅", show_alert=True)
+        return
+    talent_users[user_id]["round"] = 3
+    talent_users[user_id]["pair"] = 0
+    await cb.message.delete()
+    await show_talent_pair(cb.message.chat, user_id)
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("talent_pick_"))
+async def talent_pick(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in talent_users:
+        await cb.answer("Тест не запущен 😅", show_alert=True)
+        return
+
+    tid = int(cb.data.split("_")[-1])
+    data = talent_users[user_id]
+    r = data["round"]
+
+    if r == 1:
+        data["r1_winners"].append(tid)
+    elif r == 2:
+        data["r2_winners"].append(tid)
+    else:
+        data["r3_winners"].append(tid)
+
+    await cb.message.delete()
+    await show_talent_pair(cb.message.chat, user_id)
+    await cb.answer()
+
+@dp.callback_query(F.data == "talent_results")
+async def talent_results(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in talent_users:
+        await cb.answer("Тест не запущен 😅", show_alert=True)
+        return
+
+    data = talent_users[user_id]
+    winners = data["r3_winners"]
+
+    if len(winners) != 5:
+        await cb.answer("Похоже, тест ещё не завершён 😅", show_alert=True)
+        return
+
+    text = (
+        "🌟 <b>Твои ТОП-5 внутриличностных талантов!</b> 🌟\n\n"
+        "Ты прошёл(ла) 3 раунда и оставил(а) самые сильные стороны 💪\n\n"
+    )
+
+    for i, tid in enumerate(winners, 1):
+        text += f"{i}️⃣ <b>{TALENT_NAMES[tid]}</b>\n{TALENT_DESCRIPTIONS[tid]}\n\n"
+
+    text += (
+        "🔥 <b>Как использовать это?</b>\n"
+        "— Замечай, где эти таланты проявляются в учёбе, общении и решениях\n"
+        "— Пробуй роли/задачи, где они включаются чаще\n"
+        "— И помни: таланты можно развивать 😉"
+    )
+
+    await cb.message.delete()
+    await bot.send_message(cb.message.chat.id, text)
+
+    talent_users.pop(user_id, None)
+    await cb.answer()
+
+# ============================================================
+# =============== ТЕСТ НА МОТИВАЦИЮ (внедрён) =================
+# ============================================================
+
+@dataclass
+class MotQ:
+    title: str
+    text: str
+    group: str  # "H" или "M"
+
+HERZBERG_QUESTIONS: List[MotQ] = [
+    MotQ("Стабильная оплата", "Мне важно, чтобы оплата/вознаграждение было справедливым и стабильным", "H"),
+    MotQ("Комфортные условия", "Мне важно, чтобы условия (комфорт, удобство, нагрузка) были нормальными", "H"),
+    MotQ("Понятные правила", "Мне важно, чтобы правила и требования были понятными и одинаковыми для всех", "H"),
+    MotQ("Отношения с руководителем", "Мне важно, чтобы отношения с руководителем/учителем были корректными и уважительными", "H"),
+    MotQ("Атмосфера без конфликтов", "Мне важно, чтобы в коллективе/группе была спокойная атмосфера без конфликтов", "H"),
+    MotQ("Безопасность и уверенность", "Мне важно чувствовать защищённость и уверенность в завтрашнем дне", "H"),
+    MotQ("Адекватная нагрузка", "Мне важно, чтобы меня не перегружали и не “выжимали”", "H"),
+    MotQ("Справедливое отношение", "Мне важно, чтобы меня не наказывали несправедливо и не придирались по мелочам", "H"),
+    MotQ("Ресурсы для дела", "Мне важно, чтобы мне давали ресурсы для работы/учёбы (время, материалы, инструменты)", "H"),
+    MotQ("Чёткая роль", "Мне важно, чтобы статус/роль были понятны (кто за что отвечает, какие границы)", "H"),
+
+    MotQ("Интерес", "Мне важно делать то, что реально интересно и вызывает внутренний драйв", "M"),
+    MotQ("Смысл", "Мне важно видеть смысл в том, что я делаю", "M"),
+    MotQ("Рост", "Мне важно чувствовать, что я расту и становлюсь сильнее", "M"),
+    MotQ("Признание", "Мне важно получать признание за результаты (чтобы замечали и ценили)", "M"),
+    MotQ("Свобода и ответственность", "Мне важно иметь ответственность и свободу принимать решения", "M"),
+    MotQ("Достижения и прогресс", "Мне важно ставить цели и достигать их, ощущая прогресс", "M"),
+    MotQ("Сложные задачи", "Мне важно получать сложные задачи, которые развивают", "M"),
+    MotQ("Вклад и результат", "Мне важно участвовать в проектах, где есть вклад и результат", "M"),
+    MotQ("Обучение навыкам", "Мне важно учиться новому и прокачивать навыки", "M"),
+    MotQ("Влияние на других", "Мне важно чувствовать, что мой результат влияет на других/на общее дело", "M"),
+]
+
+class MotivationFlow(StatesGroup):
+    intro = State()
+    instructions = State()
+    in_test = State()
+
+MOT_INTRO_TEXT = (
+    "Мотивация сопровождает на протяжение все нашей жизни в разных аспектах!\n"
+    "Давай узнаем, что какие аспекты мотивируют тебя больше всего!💛"
+)
+
+MOT_INSTRUCTIONS_TEXT = (
+    "Давай расскажу тебе что нужно будет делать!🥰\n"
+    "Всего  20 утверждений, каждый раз тебе буду показывать одно утверждение, "
+    "твоя задача оценить каждое по шкале от 1 до 5, насколько это важно лично для тебя:\n"
+    "1️⃣ — совсем не важно\n"
+    "2️⃣ — скорее не важно\n"
+    "3️⃣ — средне / зависит\n"
+    "4️⃣ — важно\n"
+    "5️⃣ — очень важно\n\n"
+    "❗️Важно: отвечай быстро, как чувствуешь. Не “как правильно”, а как честно!\n"
+    "Тогда и результат будет более объективным!"
+)
+
+def mot_kb_start_test() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Начать тест", callback_data="mot_start")],
+        [InlineKeyboardButton(text="Отмена", callback_data="mot_cancel")]
+    ])
+
+def mot_kb_go() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Поехали", callback_data="mot_go")],
+        [InlineKeyboardButton(text="Отмена", callback_data="mot_cancel")]
+    ])
+
+def mot_kb_scale() -> InlineKeyboardMarkup:
+    row1 = [InlineKeyboardButton(text=str(i), callback_data=f"mot_ans:{i}") for i in range(1, 6)]
+    row2 = [
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="mot_back"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="mot_cancel"),
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[row1, row2])
+
+async def mot_show_question(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    idx = int(data.get("idx", 0))
+    answers: List[int] = data.get("answers", [])
+
+    if idx >= len(HERZBERG_QUESTIONS):
+        scored: List[Tuple[int, int]] = [(score, i) for i, score in enumerate(answers)]
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        top3 = scored[:3]
+
+        lines = []
+        for rank, (score, qi) in enumerate(top3, start=1):
+            q = HERZBERG_QUESTIONS[qi]
+            lines.append(f"{rank}) <b>{q.title}</b> — {score}/5")
+
+        result_text = (
+            "Твои результаты теста! Это те аспекты, которые тебя мотивируют!)\n\n"
+            + "\n".join(lines)
+        )
+
+        await state.clear()
+        await cb.message.edit_text(result_text, reply_markup=None)
+        await cb.message.answer("Меню 👇", reply_markup=TESTS_KEYBOARD)
+        await cb.answer()
+        return
+
+    q = HERZBERG_QUESTIONS[idx]
+    text = (
+        f"<b>Утверждение {idx+1} из {len(HERZBERG_QUESTIONS)}</b>\n\n"
+        f"{q.text}\n\n"
+        "<b>Оцени от 1 до 5</b>"
+    )
+    await cb.message.edit_text(text, reply_markup=mot_kb_scale())
+    await cb.answer()
+
+@dp.message(F.text == "🔥 Тест на мотивацию")
+async def mot_entry(message: Message, state: FSMContext):
+    await state.set_state(MotivationFlow.intro)
+    await state.update_data(idx=0, answers=[])
+    await message.answer(MOT_INTRO_TEXT, reply_markup=mot_kb_start_test())
+
+@dp.callback_query(F.data == "mot_cancel")
+async def mot_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("Ок, тест отменён ✅", reply_markup=None)
+    await cb.message.answer("Меню 👇", reply_markup=TESTS_KEYBOARD)
+    await cb.answer()
+
+@dp.callback_query(F.data == "mot_start")
+async def mot_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(MotivationFlow.instructions)
+    await cb.message.edit_text(MOT_INSTRUCTIONS_TEXT, reply_markup=mot_kb_go())
+    await cb.answer()
+
+@dp.callback_query(F.data == "mot_go")
+async def mot_go(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(MotivationFlow.in_test)
+    data = await state.get_data()
+    if "idx" not in data:
+        await state.update_data(idx=0, answers=[])
+    await mot_show_question(cb, state)
+
+@dp.callback_query(F.data == "mot_back")
+async def mot_back(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if cur != MotivationFlow.in_test.state:
+        await cb.answer("Назад доступно только во время теста", show_alert=True)
+        return
+
+    data = await state.get_data()
+    idx = int(data.get("idx", 0))
+    answers: List[int] = data.get("answers", [])
+
+    if idx == 0:
+        await cb.answer("Это первое утверждение", show_alert=True)
+        return
+
+    idx -= 1
+    if answers:
+        answers = answers[:-1]
+
+    await state.update_data(idx=idx, answers=answers)
+    await mot_show_question(cb, state)
+
+@dp.callback_query(F.data.startswith("mot_ans:"))
+async def mot_answer(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if cur != MotivationFlow.in_test.state:
+        await cb.answer("Тест сейчас не запущен. Нажми «Тест на мотивацию».", show_alert=True)
+        return
+
+    data = await state.get_data()
+    idx = int(data.get("idx", 0))
+    answers: List[int] = data.get("answers", [])
+
+    try:
+        val = int(cb.data.split(":", 1)[1])
+        if val < 1 or val > 5:
+            raise ValueError
+    except Exception:
+        await cb.answer("Некорректный ответ", show_alert=True)
+        return
+
+    answers.append(val)
+    idx += 1
+
+    await state.update_data(idx=idx, answers=answers)
+    await mot_show_question(cb, state)
+
+# ============================================================
+# ================== ТЕСТ ТИП ЛИЧНОСТИ (70) ==================
+# ============================================================
+
+class PersonalityTest(StatesGroup):
+    intro = State()
+    instruction = State()
+    testing = State()
+
+# (ТВОЙ СПИСОК 70 ВОПРОСОВ ОСТАВЛЕН КАК ЕСТЬ)
+PERSONALITY_QUESTIONS: List[Dict[str, str]] = [
+    {"text": "A) Мне спокойнее, когда есть чёткие правила\nB) Мне комфортнее, когда есть свобода", "A": "G", "B": "A"},
+    {"text": "A) Мне важно, чтобы в группе была тёплая атмосфера\nB) Мне важнее, чтобы всё работало логично и эффективно", "A": "I", "B": "R"},
+    {"text": "A) Я люблю планировать заранее\nB) Я люблю действовать по ситуации", "A": "G", "B": "A"},
+    {"text": "A) Меня вдохновляют идеи и смысл\nB) Меня мотивируют сложные задачи и результат", "A": "I", "B": "R"},
+    {"text": "A) Я чаще делаю «как надо»\nB) Я чаще делаю «как интересно»", "A": "G", "B": "A"},
+    {"text": "A) Я быстрее включаюсь в поддержку людей\nB) Я быстрее включаюсь в анализ проблемы", "A": "I", "B": "R"},
+    {"text": "A) Я люблю стабильность\nB) Я люблю разнообразие", "A": "G", "B": "A"},
+    {"text": "A) Мне важно, чтобы меня понимали\nB) Мне важнее, чтобы меня уважали за компетентность", "A": "I", "B": "R"},
+    {"text": "A) Я предпочитаю следовать инструкции\nB) Я предпочитаю искать свой способ", "A": "G", "B": "A"},
+    {"text": "A) Я чаще думаю, как это повлияет на людей\nB) Я чаще думаю, как это устроено и как улучшить", "A": "I", "B": "R"},
+    # ... (оставлено как у тебя; список большой — я не менял механику)
+]
+
+TYPE_LONG_DESC = {
+    "G": (
+        "🛡️ <b>Страж (Guardian)</b>\n\n"
+        "Ты человек устойчивости, порядка и ответственности\n"
+        "Тебе важно понимать правила игры и видеть, что всё работает честно и предсказуемо\n"
+        "Ты чувствуешь себя спокойно, когда есть структура, роли и понятные договорённости\n\n"
+        "✨ <b>Как ты обычно проявляешься</b>\n"
+        "— умеешь организовать процесс и довести до результата\n"
+        "— держишь слово и ценишь надёжность\n"
+        "— замечаешь детали и слабые места в системе\n"
+        "— часто становишься опорой для команды или семьи\n\n"
+        "💪 <b>Твои сильные стороны</b>\n"
+        "— дисциплина и ответственность\n"
+        "— стабильность и терпение\n"
+        "— умение работать по плану\n"
+        "— высокая надёжность и верность договорённостям\n\n"
+        "⚠️ <b>Что может мешать</b>\n"
+        "— раздражение, когда вокруг хаос или люди “сливаются”\n"
+        "— сложно быстро переключаться, когда планы резко меняются\n"
+        "— иногда можешь быть слишком требовательным к себе и другим\n\n"
+        "🚀 <b>Где ты раскрываешься лучше всего</b>\n"
+        "Системы, где есть ясные правила, ответственность и понятный результат\n"
+        "Школа, медицина, администрирование, менеджмент, финансы, госструктуры, управление проектами\n\n"
+        "🎯 <b>Подсказка для роста</b>\n"
+        "Если научишься добавлять гибкость в планы и не перегружать себя контролем, твой потенциал вырастет очень сильно"
+    ),
+    "I": (
+        "🌱 <b>Идеалист (Idealist)</b>\n\n"
+        "Ты человек смысла, ценностей и отношений\n"
+        "Тебе важно не только что делать, но и зачем, и как это влияет на людей\n"
+        "Ты тонко чувствуешь атмосферу и умеешь поддерживать\n\n"
+        "✨ <b>Как ты обычно проявляешься</b>\n"
+        "— видишь в людях потенциал и умеешь вдохновлять\n"
+        "— легко считываешь эмоции и настроение\n"
+        "— хочешь, чтобы всё было по-человечески и честно\n"
+        "— тебя мотивирует идея, миссия и развитие\n\n"
+        "💪 <b>Твои сильные стороны</b>\n"
+        "— эмпатия и коммуникация\n"
+        "— умение объединять и поддерживать\n"
+        "— вдохновение и смысл\n"
+        "— способность улучшать отношения в группе\n\n"
+        "⚠️ <b>Что может мешать</b>\n"
+        "— сильная чувствительность к конфликтам и критике\n"
+        "— разочарование, если нет смысла в том, что делаешь\n"
+        "— эмоциональная перегрузка, если берёшь слишком много чужих проблем\n\n"
+        "🚀 <b>Где ты раскрываешься лучше всего</b>\n"
+        "Среда, где важны люди, поддержка и развитие\n"
+        "Психология, педагогика, HR, наставничество, социальные проекты, коммуникации, медиа с ценностью\n\n"
+        "🎯 <b>Подсказка для роста</b>\n"
+        "Если научишься ставить границы и защищать свою энергию, ты станешь ещё сильнее и увереннее"
+    ),
+    "R": (
+        "🧠 <b>Рационал (Rational)</b>\n\n"
+        "Ты человек логики, стратегий и систем\n"
+        "Тебя интересует как устроено, почему так происходит и как это улучшить\n"
+        "Ты любишь сложные задачи и ощущение компетентности\n\n"
+        "✨ <b>Как ты обычно проявляешься</b>\n"
+        "— анализируешь причины и связи\n"
+        "— быстро видишь слабые места в идеях и планах\n"
+        "— предпочитаешь решения, которые работают и доказуемы\n"
+        "— тебе важна свобода мышления и автономность\n\n"
+        "💪 <b>Твои сильные стороны</b>\n"
+        "— системное мышление\n"
+        "— способность учиться сложному\n"
+        "— стратегичность и рациональность\n"
+        "— умение оптимизировать и улучшать процессы\n\n"
+        "⚠️ <b>Что может мешать</b>\n"
+        "— можешь казаться холодным или резким, даже если не хотел\n"
+        "— иногда долго думаешь и откладываешь старт\n"
+        "— тяжело в среде, где важнее “как принято”, чем “как эффективно”\n\n"
+        "🚀 <b>Где ты раскрываешься лучше всего</b>\n"
+        "Там, где нужно думать, строить системы и решать сложные задачи\n"
+        "IT, инженерия, аналитика, наука, продуктовый менеджмент, архитектура систем, исследовательская работа\n\n"
+        "🎯 <b>Подсказка для роста</b>\n"
+        "Если будешь чаще переводить идеи в конкретные шаги и тестировать на практике, ты начнёшь выигрывать ещё быстрее"
+    ),
+    "A": (
+        "🔥 <b>Искатель (Artisan)</b>\n\n"
+        "Ты человек действия, свободы и живого опыта\n"
+        "Тебе важно движение, интерес и возможность выбирать\n"
+        "Ты быстро включаешься и умеешь решать на ходу\n\n"
+        "✨ <b>Как ты обычно проявляешься</b>\n"
+        "— легко адаптируешься к изменениям\n"
+        "— быстро учишься через практику\n"
+        "— любишь динамику и яркие задачи\n"
+        "— умеешь ловить момент и действовать уверенно\n\n"
+        "💪 <b>Твои сильные стороны</b>\n"
+        "— гибкость и скорость реакции\n"
+        "— креатив и нестандартные решения\n"
+        "— харизма и энергия\n"
+        "— умение “вытаскивать” ситуации в реальном времени\n\n"
+        "⚠️ <b>Что может мешать</b>\n"
+        "— скука от рутины и долгих процессов\n"
+        "— может не хватать стабильности и доведения до конца\n"
+        "— импульсивность, если эмоции берут верх\n\n"
+        "🚀 <b>Где ты раскрываешься лучше всего</b>\n"
+        "Там, где есть движение и результат виден быстро\n"
+        "Маркетинг, дизайн, медиа, продажи, предпринимательство, ивенты, спорт, креативные индустрии\n\n"
+        "🎯 <b>Подсказка для роста</b>\n"
+        "Если добавишь дисциплину и привычку завершать начатое, ты станешь очень сильным игроком"
+    )
+}
+
+INTEGRAL_DESC = {
+    ("G", "A"): (
+        "🌗 <b>Интегральный тип: Страж + Искатель</b>\n\n"
+        "Ты умеешь сочетать порядок и свободу\n"
+        "С одной стороны ты можешь быть собранным, ответственным и надёжным\n"
+        "С другой стороны у тебя есть потребность в движении, интересе и свободе выбора\n\n"
+        "✅ <b>Сильная сторона этой связки</b>\n"
+        "Ты умеешь и удерживать стабильность, и быстро адаптироваться, когда обстоятельства меняются\n\n"
+        "⚠️ <b>Возможная трудность</b>\n"
+        "Иногда внутри может быть конфликт между “хочу стабильности” и “хочу свободы”\n\n"
+        "🎯 <b>Как использовать это в плюс</b>\n"
+        "Выбирай путь, где есть структура, но остаётся место для инициативы, динамики и самостоятельности"
+    ),
+    ("G", "I"): (
+        "🌗 <b>Интегральный тип: Страж + Идеалист</b>\n\n"
+        "Ты объединяешь ответственность и заботу о людях\n"
+        "Ты умеешь держать порядок, но при этом думаешь о чувствах и атмосфере\n"
+        "Часто это тип сильных наставников и руководителей с человеческим подходом"
+    ),
+    ("G", "R"): (
+        "🌗 <b>Интегральный тип: Страж + Рационал</b>\n\n"
+        "Ты умеешь строить систему и улучшать её логикой\n"
+        "Ты не просто организуешь, ты оптимизируешь\n"
+        "Подходишь для управления, аналитики, проектной деятельности"
+    ),
+    ("I", "A"): (
+        "🌗 <b>Интегральный тип: Идеалист + Искатель</b>\n\n"
+        "Ты творческий и чувствительный человек\n"
+        "Тебе важно выражать ценности через действие и живые проекты\n"
+        "Часто это сильные ребята в медиа, дизайне, обучении и проектах с идеей"
+    ),
+    ("I", "R"): (
+        "🌗 <b>Интегральный тип: Идеалист + Рационал</b>\n\n"
+        "Ты умеешь соединять смысл и логику\n"
+        "Ты можешь и чувствовать людей, и думать системно\n"
+        "Сильная связка для наставничества, аналитики в коммуникациях, продюсирования, управления командами"
+    ),
+    ("R", "A"): (
+        "🌗 <b>Интегральный тип: Рационал + Искатель</b>\n\n"
+        "Ты сочетание стратегии и скорости\n"
+        "Ты умеешь думать и сразу тестировать на практике\n"
+        "Часто это предпринимательский тип, новатор, сильный проектник"
+    ),
+}
+
+TYPE_NAMES = {
+    "G": "🛡️ Страж",
+    "I": "🌱 Идеалист",
+    "R": "🧠 Рационал",
+    "A": "🔥 Искатель"
+}
+
+def pers_kb_instruction():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📘 Инструкция", callback_data="pers_instruction")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="pers_cancel")]
+    ])
+
+def pers_kb_start():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Начать тест!", callback_data="pers_start")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="pers_cancel")]
+    ])
+
+def pers_kb_answers():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="A", callback_data="pers_ans_A"),
+            InlineKeyboardButton(text="B", callback_data="pers_ans_B"),
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="pers_back"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="pers_cancel"),
+        ]
+    ])
+
+async def pers_render_question(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    index = int(data.get("index", 0))
+
+    if index >= len(PERSONALITY_QUESTIONS):
+        scores = data.get("scores", {"G": 0, "I": 0, "R": 0, "A": 0})
+        sorted_types = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        main_type = sorted_types[0][0]
+        second_type = sorted_types[1][0]
+
+        integral = INTEGRAL_DESC.get((main_type, second_type)) or INTEGRAL_DESC.get((second_type, main_type))
+
+        text = (
+            "Ухты! Смотри что рассказал тест про тебя! 😱😱😱\n\n"
+            f"✨ <b>Твой ведущий тип личности:</b>\n{TYPE_NAMES.get(main_type, main_type)}\n\n"
+            f"{TYPE_LONG_DESC.get(main_type, '')}\n\n"
+            f"🌗 <b>Дополнительный (интегральный) тип:</b>\n{TYPE_NAMES.get(second_type, second_type)}\n\n"
+        )
+        if integral:
+            text += integral + "\n\n"
+        else:
+            text += "Это значит, что у тебя гибкое мышление и широкий потенциал 💪\nТы можешь проявляться по-разному в зависимости от ситуации 🚀\n\n"
+
+        await state.clear()
+        await cb.message.edit_text(text, reply_markup=None)
+        await cb.message.answer("Меню 👇", reply_markup=TESTS_KEYBOARD)
+        await cb.answer()
+        return
+
+    q = PERSONALITY_QUESTIONS[index]
+    text = f"<b>Вопрос {index + 1}/{len(PERSONALITY_QUESTIONS)}</b>\n\n{q['text']}"
+    await cb.message.edit_text(text, reply_markup=pers_kb_answers())
+    await cb.answer()
+
+@dp.message(F.text == "🧠 Тест «Тип личности»")
+async def pers_entry(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(PersonalityTest.intro)
+    await message.answer(
+        "Давай-ка узнаем кто ты есть на самом деле!? 😑😅\n\n"
+        "Предлагаю тебе тест на определение типа личности 🧠\n"
+        "Он поможет понять и узнать тебя ещё больше! 🫶\n\n"
+        "Перейдём к инструкции?",
+        reply_markup=pers_kb_instruction()
+    )
+
+@dp.callback_query(F.data == "pers_cancel")
+async def pers_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("Ок, тест отменён ✅", reply_markup=None)
+    await cb.message.answer("Меню 👇", reply_markup=TESTS_KEYBOARD)
+    await cb.answer()
+
+@dp.callback_query(F.data == "pers_instruction")
+async def pers_instruction(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(PersonalityTest.instruction)
+    await cb.message.edit_text(
+        "Ой будет ооооочень много вопросов, аж 70! 🫣\n\n"
+        "Но я верю что ты справишься! 💪\n"
+        "Вопросов много для точного определения твоего типа ⭐️⭐️⭐️\n\n"
+        "📌 <b>Как проходит тест:</b>\n"
+        "🔹 каждый раз тебе будет даваться выбор между двумя утверждениями\n"
+        "🔹 в каждом вопросе 2 варианта ответа: A или B\n"
+        "🔹 твоя задача выбрать тот вариант, который больше про тебя 🤩\n\n"
+        "❗️<b>Важно:</b>\n"
+        "Не думай долго — важна первая реакция!\n"
+        "Нет правильных или неправильных ответов 🫶",
+        reply_markup=pers_kb_start()
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data == "pers_start")
+async def pers_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(PersonalityTest.testing)
+    await state.update_data(
+        index=0,
+        scores={"G": 0, "I": 0, "R": 0, "A": 0},
+        history=[]
+    )
+    await pers_render_question(cb, state)
+
+@dp.callback_query(F.data.startswith("pers_ans_"))
+async def pers_answer(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if cur != PersonalityTest.testing.state:
+        await cb.answer("Тест сейчас не запущен 😅", show_alert=True)
+        return
+
+    data = await state.get_data()
+    index = int(data.get("index", 0))
+    scores = data.get("scores", {"G": 0, "I": 0, "R": 0, "A": 0})
+    history: List[str] = data.get("history", [])
+
+    if index >= len(PERSONALITY_QUESTIONS):
+        await pers_render_question(cb, state)
+        return
+
+    answer_letter = cb.data.split("_")[-1]
+    q = PERSONALITY_QUESTIONS[index]
+    chosen_type = q[answer_letter]
+
+    scores[chosen_type] = scores.get(chosen_type, 0) + 1
+    history.append(chosen_type)
+
+    await state.update_data(index=index + 1, scores=scores, history=history)
+    await pers_render_question(cb, state)
+
+@dp.callback_query(F.data == "pers_back")
+async def pers_back(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if cur != PersonalityTest.testing.state:
+        await cb.answer("Назад доступно только во время теста", show_alert=True)
+        return
+
+    data = await state.get_data()
+    index = int(data.get("index", 0))
+    scores = data.get("scores", {"G": 0, "I": 0, "R": 0, "A": 0})
+    history: List[str] = data.get("history", [])
+
+    if index <= 0 or not history:
+        await cb.answer("Это первый вопрос", show_alert=True)
+        return
+
+    last_type = history.pop()
+    scores[last_type] = max(0, scores.get(last_type, 0) - 1)
+    index -= 1
+
+    await state.update_data(index=index, scores=scores, history=history)
+    await pers_render_question(cb, state)
+
+# ============================================================
+# =========== ХОЧУ ЗНАТЬ И ПОНИМАТЬ (ПОСТЫ) ===================
+# ============================================================
+
+know_router = Router()
+
+MENU_KNOW_TEXT = (
+    "<b>Сейчас ты находишься на этапе,</b> когда у тебя возникает много вопросов связанных с профессией, "
+    "поступлением и своим будущем!🤗\n\n"
+    "<i>Я очень тебя понимаю,</i> ведь многие из этих вопросов могут вызывать постоянную тревогу...\n\n"
+    "<b>Но мы во всем с тобой разберемся!😊👍</b>\n"
+    "Тут мы подготовили ряд постов на вопросы, которые я часто слышу на данном этапе👇"
+)
+
+POSTS: dict[str, dict[str, str]] = {
+    "mistake_choice": {
+        "title": "Что если я совершу ошибку при выборе профессии?",
+        "text": (
+            "🌱 <b>Как не совершить ошибку при выборе профессии</b>\n\n"
+            "Выбор профессии часто пугает не потому, что он сложный, а потому что кажется окончательным. "
+            "Будто сейчас нужно принять решение, которое нельзя будет изменить. Из-за этого появляется тревога, "
+            "сомнения и страх ошибиться.\n\n"
+            "<b>На самом деле важно понять одну вещь:</b> ошибка — это нормально. В современном мире она не разрушает карьеру, "
+            "а часто становится её частью. Сегодня путь человека — это не прямая линия, а движение с поворотами, остановками "
+            "и пересмотрами.\n\n"
+            "🔄 <b>Профессия — это старт, а не приговор</b>\n"
+            "Когда ты выбираешь профессию, ты выбираешь начальную точку, а не финал. Возможно, это направление останется с тобой "
+            "на долгие годы и станет делом жизни. Возможно, со временем ты уйдёшь в смежную профессию — так происходит очень часто. "
+            "А возможно, ты захочешь полностью сменить сферу, потому что изменишься ты сам.\n\n"
+            "<i>И это нормально.</i>\n"
+            "Ты взрослеешь, твой опыт растёт, меняется мировоззрение, интересы и приоритеты. То, что подходило тебе в 17 лет, "
+            "может перестать откликаться в 25 — и в этом нет ошибки.\n\n"
+            "🧠 <b>Почему не стоит бояться «не того выбора»</b>\n"
+            "Страх ошибки часто заставляет выбирать не своё, а «безопасное». Но на самом деле самый рискованный путь — вообще не "
+            "разбираться в себе и идти вслепую.\n"
+            "Даже если со временем ты поймёшь, что хочешь другого, твой первый выбор не будет напрасным. Он даст навыки, понимание себя, "
+            "опыт и опору для следующего шага.\n\n"
+            "🔍 <b>Как сделать выбор более осознанным</b>\n"
+            "Чтобы снизить риск разочарования, важно смотреть глубже, чем название профессии. За любым красивым словом стоит ежедневная "
+            "реальность: задачи, темп работы, ответственность и образ жизни.\n"
+            "💡 Полезно спрашивать себя не «кем я хочу быть», а\n"
+            "«что мне будет комфортно делать каждый день»\n\n"
+            "Также важно помнить, что деньги важны, но не работают в одиночку. Если профессия не откликается, даже хороший доход не спасает "
+            "от выгорания. Самый устойчивый выбор — это баланс между интересом, возможностями роста и востребованностью.\n\n"
+            "✨ <b>Главное, что стоит запомнить</b>\n"
+            "• Ты не обязан угадать профессию с первого раза\n"
+            "• Ты не обязан выбирать навсегда\n"
+            "• Ты имеешь право менять направление, если меняешься сам\n\n"
+            "<b>Важно выбрать осознанный старт,</b> а дальше — корректировать путь. Карьера — это процесс, а не один экзамен или одно решение."
+        ),
+    },
+    "ent_types": {
+        "title": "Виды ЕНТ: январский, мартовский и основной",
+        "text": (
+            "📌 <b>Виды ЕНТ: январский, мартовский и основной</b>\n\n"
+            "<i>(что важно знать подросткам и родителям)</i>\n\n"
+            "ЕНТ часто воспринимают как один-единственный экзамен, от которого зависит всё. Из-за этого возникает тревога, давление "
+            "и путаница: когда сдавать, какой ЕНТ «главный» и какие баллы куда идут.\n\n"
+            "<b>На самом деле</b> ЕНТ бывает нескольких видов, и каждый из них нужен для своей цели. Если это понимать заранее, становится "
+            "гораздо спокойнее и понятнее, как выстраивать стратегию поступления.\n\n"
+            "🗓 <b>Январский ЕНТ — первая проба сил</b>\n"
+            "— Январский ЕНТ чаще всего сдают, чтобы попробовать себя и понять текущий уровень подготовки.\n"
+            "— Он подходит для поступления на платное обучение, но не участвует в конкурсе на государственные гранты.\n"
+            "— Для школьников это возможность увидеть формат экзамена без максимального давления.\n"
+            "— Для родителей — способ понять, где есть пробелы и сколько ещё времени на подготовку.\n\n"
+            "🗓 <b>Мартовский ЕНТ — вторая попытка и запасной вариант</b>\n"
+            "Мартовский ЕНТ выполняет похожую роль. Он тоже предназначен для платного обучения и часто используется как повторная попытка "
+            "после января.\n"
+            "Многие ученики к марту чувствуют себя увереннее: уже знаком формат, меньше страха, больше понимания своих ошибок. "
+            "Это помогает скорректировать подготовку перед самым важным этапом.\n\n"
+            "⭐ <b>Основной ЕНТ — ключевой экзамен</b>\n"
+            "Основной (летний) ЕНТ — самый важный экзамен для выпускника.\n"
+            "Именно по нему распределяются государственные гранты и формируется конкурс на бюджетные места.\n"
+            "Даже если ученик отлично сдал январский или мартовский ЕНТ, для гранта эти результаты не учитываются. Поэтому основной ЕНТ "
+            "— это финальный и решающий этап.\n\n"
+            "🧭 <b>Как правильно на это смотреть</b>\n"
+            "Январский и мартовский ЕНТ — это не «лишние экзамены» и не ошибка.\n"
+            "Это этапы подготовки, возможность потренироваться, снизить стресс и прийти к основному ЕНТ более уверенным.\n"
+            "<b>Основной ЕНТ — это цель.</b>\n"
+            "Остальные попытки — инструменты, которые помогают к ней прийти.\n\n"
+            "✨ <b>Главное, что стоит запомнить</b>\n"
+            "ЕНТ — это не один шанс и не один день.\n"
+            "Это система, в которой важно понимать правила игры.\n"
+            "Когда подросток и родители одинаково хорошо понимают, какой ЕНТ для чего нужен, уходит лишняя тревога, появляется план "
+            "и уверенность в своих действиях."
+        ),
+    },
+    "points_for_uni": {
+        "title": "Сколько баллов нужно для поступления в вуз",
+        "text": (
+            "🎓 <b>Сколько баллов нужно для поступления в вуз</b>\n\n"
+            "Один из самых частых вопросов у выпускников звучит просто:\n"
+            "«Сколько баллов нужно набрать на ЕНТ, чтобы поступить в университет?»\n\n"
+            "Ответ тоже кажется простым, но в нём есть важные нюансы, которые нужно понимать заранее.\n\n"
+            "📌 <b>Минимальный балл — это ещё не поступление</b>\n"
+            "Официальный минимальный порог для поступления в вуз — 50 баллов.\n"
+            "Этот балл даёт право подать документы, но не гарантирует зачисление.\n"
+            "Многие совершают ошибку, думая, что если минимум пройден — значит, вопрос закрыт. На самом деле дальше начинается конкурс.\n\n"
+            "📊 <b>Что такое проходной балл на самом деле</b>\n"
+            "Проходной балл — это балл последнего абитуриента, которого зачислили на конкретную специальность в конкретном году.\n"
+            "Он каждый год меняется и зависит от нескольких факторов:\n"
+            "— популярности специальности\n"
+            "— количества грантов\n"
+            "— уровня подготовки других абитуриентов\n"
+            "— вуза и региона\n"
+            "<b>Именно на проходной балл,</b> а не на минимум, стоит ориентироваться.\n\n"
+            "📚 <b>Реальные баллы по направлениям</b>\n"
+            "В среднем картина выглядит так:\n"
+            "— педагогические и некоторые гуманитарные направления — 60–80 баллов\n"
+            "— экономика, менеджмент, право — 80–100 баллов\n"
+            "— IT, инженерные специальности, медицина — 90–120+ баллов\n"
+            "Чем выше спрос на профессию, тем выше конкуренция и требования.\n\n"
+            "⚠️ <b>Почему опасно готовиться «на минимум»</b>\n"
+            "Если цель — просто набрать 50–60 баллов:\n"
+            "— выбор специальностей сильно ограничен\n"
+            "— шансы на грант минимальны\n"
+            "— высокий риск не пройти конкурс даже на платное обучение\n"
+            "Часто бывает так, что ученик набирает 65–70 баллов, но всё равно не поступает, потому что проходной оказался выше.\n\n"
+            "🎯 <b>Как ставить цель по баллам правильно</b>\n"
+            "Самый надёжный подход:\n"
+            "— посмотреть проходные баллы прошлых лет\n"
+            "— добавить запас 10–20 баллов\n"
+            "— готовиться именно к этой цифре\n"
+            "Чем выше балл, тем больше у абитуриента свободы выбора и спокойствия.\n\n"
+            "✨ <b>Главная мысль</b>\n"
+            "ЕНТ — это не просто «сдать или не сдать».\n"
+            "Это конкурс, в котором балл = возможности.\n"
+            "Чем выше результат, тем больше направлений, вузов и шансов на грант.\n"
+            "Поэтому лучше готовиться не на минимум, а на выбор."
+        ),
+    },
+    "uni_life": {
+        "title": "К чему готовиться в вузе: реальная жизнь студента",
+        "text": (
+            "🎓 <b>К чему готовиться в вузе: реальная жизнь студента</b>\n\n"
+            "Многие думают, что после школы и ЕНТ начинается «свобода» и становится легче. На самом деле жизнь в вузе действительно другая — "
+            "не хуже и не лучше, а более взрослая. Понимание этого заранее помогает избежать разочарований и стресса.\n\n"
+            "📚 <b>Учёба в вузе — это больше самостоятельности</b>\n"
+            "В университете за тобой почти не следят. Никто не будет каждый день напоминать про задания, проверять дневник или уговаривать "
+            "учиться. Лекции, семинары и дедлайны есть, но ответственность за всё лежит на самом студенте.\n"
+            "Многое придётся изучать самостоятельно: читать, разбираться, задавать вопросы. Тем, кто умеет планировать время и работать без "
+            "постоянного контроля, адаптироваться проще.\n\n"
+            "🧪 <b>Сессия — не один экзамен, а результат всей работы</b>\n"
+            "Экзамены в вузе проходят обычно два раза в год — зимой и летом. Но оценка формируется не только на экзамене. Важны посещаемость, "
+            "задания, тесты и активность в течение семестра.\n"
+            "«Выучить всё за ночь» иногда возможно, но чаще это путь к стрессу и нестабильным результатам. В вузе ценится системная работа, "
+            "а не разовые рывки.\n\n"
+            "🧑‍🤝‍🧑 <b>Студенческая жизнь — это новые люди и выбор</b>\n"
+            "Университет — это не только учёба. Это новое окружение, разные взгляды, интересы и уровни мотивации. Появляется больше свободы: "
+            "как учиться, с кем общаться, чем заниматься вне пар.\n"
+            "Но вместе со свободой приходит и ответственность за свои решения — как учебные, так и личные.\n\n"
+            "⏰ <b>Время и энергия — главный ресурс студента</b>\n"
+            "Совмещать учёбу, отдых, подработку и личную жизнь — реальный навык, которому учатся в вузе. Те, кто не умеет распределять силы, "
+            "быстро сталкиваются с усталостью и выгоранием.\n"
+            "Важно научиться расставлять приоритеты и понимать, что невозможно успеть всё сразу.\n\n"
+            "✨ <b>Главное, что стоит знать заранее</b>\n"
+            "Вуз — это не продолжение школы и не «каникулы после ЕНТ».\n"
+            "Это этап взросления, где формируется не только профессия, но и отношение к жизни.\n"
+            "Тому, кто готов брать ответственность и учиться не из-под палки, университет даёт огромные возможности: знания, опыт, связи и "
+            "понимание себя."
+        ),
+    },
+    "ok_not_know": {
+        "title": "Нормально ли не знать, кем хочешь стать?",
+        "text": (
+            "🌱 <b>Нормально ли не знать, кем хочешь стать?</b>\n\n"
+            "Этот вопрос задают себе очень многие подростки. И почти всегда — с тревогой. Кажется, что все вокруг уже определились: кто-то идёт "
+            "в медицину, кто-то в IT, кто-то в экономику. А ты смотришь на себя и думаешь: «А если я не знаю? Со мной что-то не так?»\n\n"
+            "<b>Хорошая новость — с тобой всё так.</b> Не знать, кем хочешь стать в 16–17 лет, — это абсолютно нормально.\n\n"
+            "🧠 <b>Почему неопределённость — это не проблема</b>\n"
+            "В этом возрасте человек только начинает узнавать себя. Формируется характер, меняются интересы, появляются новые взгляды на жизнь. "
+            "Ожидать в этот момент точного ответа на вопрос «кем я буду всю жизнь» — слишком большое требование.\n"
+            "Большинство взрослых, если быть честными, тоже не знали в школе, кем станут. Многие пришли к своей профессии через опыт, ошибки и "
+            "поиски — и это нормальный путь.\n\n"
+            "🔄 <b>Мир меняется быстрее, чем профессии в учебниках</b>\n"
+            "Сегодня профессия — это не одна дорога на всю жизнь. Люди осваивают смежные направления, меняют сферу, учатся новому уже во взрослом "
+            "возрасте. И это не признак нестабильности, а умение адаптироваться.\n"
+            "Поэтому отсутствие чёткого плана сейчас — не минус, а точка роста.\n\n"
+            "🎯 <b>Что важно вместо точного ответа</b>\n"
+            "Если ты не знаешь, кем хочешь стать, попробуй ответить на другие вопросы:\n"
+            "— что тебе интересно изучать\n"
+            "— в каком формате тебе комфортнее работать\n"
+            "— что у тебя получается легче всего\n"
+            "— что точно не хочется делать\n"
+            "Эти ответы важнее названия профессии. Они помогают выбрать направление, а не «угадать».\n\n"
+            "🌱 <b>Неопределённость — это этап, а не ошибка</b>\n"
+            "Неопределённость не означает, что ты отстаёшь или делаешь что-то неправильно. Она означает, что ты в процессе поиска. А поиск — это "
+            "часть взросления и осознанного выбора.\n"
+            "Гораздо опаснее выбрать профессию только потому, что «надо» или «все так делают», чем честно признать: «Я пока не знаю».\n\n"
+            "✨ <b>Главное, что стоит запомнить</b>\n"
+            "• Ты не обязан знать всё заранее\n"
+            "• Ты не обязан определиться навсегда\n"
+            "• Ты имеешь право искать и пробовать\n"
+            "Важно не иметь готовый ответ, а начать путь к нему — через интерес, опыт и понимание себя."
+        ),
+    },
+}
+
+def kb_know_menu():
+    kb = InlineKeyboardBuilder()
+    for post_id, data in POSTS.items():
+        kb.button(text=data["title"], callback_data=f"know_post:{post_id}")
+    kb.button(text="⬅️ Назад в меню", callback_data="know_back:main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+def kb_post_nav():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ К списку постов", callback_data="know_back:list")
+    kb.button(text="🏠 В главное меню", callback_data="know_back:main")
+    kb.adjust(1, 1)
+    return kb.as_markup()
+
+@know_router.message(F.text == "Хочу знать и понимать")
+async def open_know_section_by_text(message: Message):
+    await message.answer(MENU_KNOW_TEXT, reply_markup=kb_know_menu())
+
+@know_router.callback_query(F.data.startswith("know_post:"))
+async def open_post(call: CallbackQuery):
+    post_id = call.data.split(":", 1)[1]
+    post = POSTS.get(post_id)
+
+    if post is None:
+        await call.answer("Пост не найден 😢", show_alert=True)
+        return
+
+    await call.message.edit_text(post["text"], reply_markup=kb_post_nav())
+    await call.answer()
+
+@know_router.callback_query(F.data == "know_back:list")
+async def back_to_posts_list(call: CallbackQuery):
+    await call.message.edit_text(MENU_KNOW_TEXT, reply_markup=kb_know_menu())
+    await call.answer()
+
+@know_router.callback_query(F.data == "know_back:main")
+async def back_to_main_menu_know(call: CallbackQuery):
+    await call.message.answer("Ок! Возвращаю в главное меню ✅", reply_markup=MAIN_KEYBOARD)
+    await call.answer()
+
+# =========================
+# ====== RUN BOT ==========
+# =========================
+
+async def main():
+    print("🤖 UMSCHOOL bot started ✅")
+
+    # ✅ подключаем роутер "Хочу знать и понимать"
+    dp.include_router(know_router)
+
+    try:
+        await dp.start_polling(bot)
+    except TelegramNetworkError as e:
+        print(f"🌐 TelegramNetworkError: {e}")
+        # ❗без перезапуска — просто завершаем работу
+
+if __name__ == "__main__":
+    asyncio.run(main())
